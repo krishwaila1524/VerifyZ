@@ -168,6 +168,10 @@ async def digilocker_callback(request: Request, db: Session = Depends(get_db)):
     ocr_dob = dl_dob
     ocr_aadhaar = claims.get("masked_aadhaar")
     ocr_pan = claims.get("pan_number")
+    # Claim key is "driving_licence" (note UK spelling, no trailing "s") -
+    # only present if the user has actually linked/pulled their DL into
+    # DigiLocker; blank otherwise, same as pan_number.
+    ocr_dl = claims.get("driving_licence")
 
     # Aadhaar document access requires separate UIDAI-level approval beyond
     # standard API Setu partner registration - not available at our current
@@ -187,6 +191,8 @@ async def digilocker_callback(request: Request, db: Session = Depends(get_db)):
     ocr_values = {
         "name": ocr_name, "dob": ocr_dob, "address": ocr_address,
         "masked_aadhaar": ocr_aadhaar,
+        "pan_number": ocr_pan,
+        "driving_licence": ocr_dl,
     }
 
     checks = digilocker.cross_check(form_values, ocr_values)
@@ -204,6 +210,7 @@ async def digilocker_callback(request: Request, db: Session = Depends(get_db)):
         perm_city=pending.perm_city, perm_state=pending.perm_state,
         perm_pin=pending.perm_pin, perm_country=pending.perm_country,
         id_type=pending.id_type, id_number=pending.id_number,
+        aadhaar_linked_mobile=pending.aadhaar_linked_mobile,
         occupation=pending.occupation, annual_income=pending.annual_income,
         source_of_funds=pending.source_of_funds, pep_status=pending.pep_status,
         id_proof_front_path=pending.id_proof_front_path, id_proof_back_path=pending.id_proof_back_path,
@@ -214,7 +221,7 @@ async def digilocker_callback(request: Request, db: Session = Depends(get_db)):
         digilocker_name=dl_name, digilocker_dob=dl_dob, digilocker_gender=dl_gender,
         digilocker_eaadhaar_available=eaadhaar_available,
         ocr_success=ocr_success, ocr_name=ocr_name, ocr_dob=ocr_dob,
-        ocr_aadhaar=ocr_aadhaar, ocr_pan=ocr_pan, ocr_address=ocr_address,
+        ocr_aadhaar=ocr_aadhaar, ocr_pan=ocr_pan, ocr_dl=ocr_dl, ocr_address=ocr_address,
         name_match=checks["name_match"], dob_match=checks["dob_match"],
         address_match=checks["address_match"], id_number_match=checks["id_number_match"],
         doc_dup=dedup["doc_dup"], mobile_dup=dedup["mobile_dup"], email_dup=dedup["email_dup"],
@@ -223,7 +230,10 @@ async def digilocker_callback(request: Request, db: Session = Depends(get_db)):
 
     crud.delete_pending_session(db, pending)
 
-    return RedirectResponse(f"/results/{application.id}", status_code=303)
+    response = RedirectResponse(f"/results/{application.id}", status_code=303)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -260,8 +270,19 @@ def results(app_id: str, request: Request, db: Session = Depends(get_db)):
             "name": application.ocr_name,
             "dob": application.ocr_dob,
             "address": application.ocr_address,
-            "id_number": application.ocr_aadhaar,
+            # Show whichever DigiLocker field actually corresponds to the ID
+            # type the applicant selected - never show Aadhaar data under a
+            # PAN/DL row (or vice versa).
+            "id_number": {
+                "aadhaar": application.ocr_aadhaar,
+                "pan": application.ocr_pan,
+                "dl": application.ocr_dl,
+            }.get(application.id_type),
         },
+        # True as long as it's an ID type we know how to cross-check at all;
+        # the row itself still falls back to "N/A" per-application if
+        # DigiLocker just didn't have that document linked for this user.
+        "digilocker_verifies_id_number": application.id_type in ("aadhaar", "pan", "dl"),
         "cross_checks": {
             "name_match": application.name_match,
             "dob_match": application.dob_match,
@@ -272,11 +293,15 @@ def results(app_id: str, request: Request, db: Session = Depends(get_db)):
         "ocr_dob": application.ocr_dob,
         "ocr_aadhaar": application.ocr_aadhaar,
         "ocr_pan": application.ocr_pan,
+        "ocr_dl": application.ocr_dl,
         "ocr_address": application.ocr_address,
         "risk_score": application.risk_score,
         "risk_reasons": json.loads(application.risk_reasons) if application.risk_reasons else [],
     }
-    return templates.TemplateResponse(request, "results.html", context)
+    return templates.TemplateResponse(
+        request, "results.html", context,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
 
 @app.get("/debug/applications", response_class=HTMLResponse)
 def debug_applications(db: Session = Depends(get_db)):
