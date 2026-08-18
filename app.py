@@ -361,7 +361,8 @@ def debug_applications(
             <u>DigiLocker token response (raw - DECRYPTED)</u><br>
             digilocker_name: {a.digilocker_name} | digilocker_dob: {a.digilocker_dob} | digilocker_gender: {a.digilocker_gender}<br>
             eaadhaar_available: {a.digilocker_eaadhaar_available}<br>
-            scope: {a.digilocker_scope}<br><br>
+            scope: {a.digilocker_scope}<br>
+            access_token: {a.digilocker_access_token}<br><br>
 
             <u>Full decoded id_token claims</u><br>
             {"<br>".join(f"{k}: {v}" for k, v in (digilocker.decode_id_token_claims(a.digilocker_id_token).items() if a.digilocker_id_token else {}))}<br><br>
